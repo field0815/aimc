@@ -3,21 +3,22 @@ import { fetchJson } from "@/lib/adapters/types";
 // ─────────────────────────────────────────────────────────────
 // 주가 시세 서비스 (FMP)
 //
-// ⚠ 무료 플랜 제약(실측 확인):
-//   - 미국 종목 quote/historical: 가능
-//   - 한국 종목(000660.KS, 005930.KS) 등: Premium 잠금 → 미지원
+// ⚠ 무료 플랜 제약(실측 확인 2026-06):
+//   - quote/historical 이 "종목별로" 허용 여부가 다름.
+//     됨:   NVDA, TSM, META, MSFT, AMZN, GOOGL, AMD
+//     안됨: AVGO(브로드컴), MU(마이크론) → Premium 잠금
+//   - 한국 종목(000660.KS, 005930.KS): Premium 잠금
 //   - 배치(comma) quote: Premium → 단일 종목씩 호출
+//   유료 플랜으로 올리면 PRICE_SUPPORTED 에 AVGO/MU/한국종목 추가하면 됨.
 //
 // 호출 수 절약을 위해 메모리 캐시(TTL)를 둔다. 서버 전용.
 // ─────────────────────────────────────────────────────────────
 
 const BASE = "https://financialmodelingprep.com/stable";
 
-/** 시세 조회가 가능한(무료 플랜) 종목 */
+/** 시세 조회가 가능한(현 무료 플랜에서 실측 확인된) 종목 */
 export const PRICE_SUPPORTED = new Set([
   "NVDA",
-  "AVGO",
-  "MU",
   "TSM",
   "META",
   "MSFT",
