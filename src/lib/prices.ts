@@ -56,29 +56,48 @@ export async function getQuote(ticker: string): Promise<Quote | null> {
   const cached = quoteCache.get(ticker);
   if (cached && Date.now() - cached.t < QUOTE_TTL) return cached.v;
 
+  // range=5d 로 일별 종가를 받아, "어제 대비"를 종가 시리즈로 직접 계산한다.
+  // (meta.chartPreviousClose 는 조회 구간 직전 종가라 '어제'가 아닐 수 있어 부호가 틀릴 수 있음)
   const res = await fetchJson<any>(
-    `${YH}/${encodeURIComponent(ticker)}?interval=1d&range=2d`,
+    `${YH}/${encodeURIComponent(ticker)}?interval=1d&range=5d`,
     { headers: { "User-Agent": UA } },
   );
   let quote: Quote | null = null;
-  const m = res.data?.chart?.result?.[0]?.meta;
-  if (m && typeof m.regularMarketPrice === "number") {
-    const price = m.regularMarketPrice;
+  const r = res.data?.chart?.result?.[0];
+  const m = r?.meta;
+  if (m) {
+    const ts: number[] = r.timestamp ?? [];
+    const cl: (number | null)[] = r.indicators?.quote?.[0]?.close ?? [];
+    const closes = ts
+      .map((_t, i) => cl[i])
+      .filter((c): c is number => typeof c === "number");
+
+    const price =
+      typeof m.regularMarketPrice === "number"
+        ? m.regularMarketPrice
+        : closes[closes.length - 1];
+
+    // 어제 종가 = 종가 시리즈의 끝에서 두 번째 (오늘 바가 마지막). 없으면 메타로 폴백.
     const prev =
-      typeof m.chartPreviousClose === "number"
-        ? m.chartPreviousClose
+      closes.length >= 2
+        ? closes[closes.length - 2]
         : typeof m.previousClose === "number"
           ? m.previousClose
-          : price;
-    const change = price - prev;
-    quote = {
-      ticker,
-      price,
-      previousClose: prev,
-      change,
-      changePct: prev ? (change / prev) * 100 : 0,
-      currency: m.currency,
-    };
+          : typeof m.chartPreviousClose === "number"
+            ? m.chartPreviousClose
+            : price;
+
+    if (typeof price === "number" && typeof prev === "number") {
+      const change = price - prev;
+      quote = {
+        ticker,
+        price,
+        previousClose: prev,
+        change,
+        changePct: prev ? (change / prev) * 100 : 0,
+        currency: m.currency,
+      };
+    }
   }
   quoteCache.set(ticker, { t: Date.now(), v: quote });
   return quote;
