@@ -19,7 +19,14 @@ export async function GET(req: Request) {
 
   const result: Record<
     string,
-    { supported: boolean; price?: number; changePct?: number; change?: number }
+    {
+      supported: boolean;
+      price?: number;
+      changePct?: number;
+      change?: number;
+      previousClose?: number;
+      currency?: string;
+    }
   > = {};
   for (const t of tickers) {
     if (!isPriceSupported(t)) {
@@ -28,7 +35,14 @@ export async function GET(req: Request) {
     }
     const q = quotes[t];
     result[t] = q
-      ? { supported: true, price: q.price, changePct: q.changePct, change: q.change }
+      ? {
+          supported: true,
+          price: q.price,
+          changePct: q.changePct,
+          change: q.change,
+          previousClose: q.previousClose,
+          currency: q.currency,
+        }
       : { supported: true }; // 지원되지만 일시적으로 못 가져옴
   }
 

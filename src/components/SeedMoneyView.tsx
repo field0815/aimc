@@ -20,7 +20,14 @@ interface Company {
 
 type QuoteMap = Record<
   string,
-  { supported: boolean; price?: number; changePct?: number; change?: number }
+  {
+    supported: boolean;
+    price?: number;
+    changePct?: number;
+    change?: number;
+    previousClose?: number;
+    currency?: string;
+  }
 >;
 
 interface SimPoint {
@@ -48,6 +55,23 @@ function fmtMoney(v: number, locale: Locale, won: string): string {
   const sign = v > 0 ? "+" : v < 0 ? "−" : "";
   const abs = Math.abs(Math.round(v)).toLocaleString(locale === "en" ? "en-US" : "ko-KR");
   return `${sign}${abs}${won}`;
+}
+
+/** 통화별 현재가 표기 */
+function fmtPrice(price: number, currency?: string): string {
+  if (currency === "KRW") return `${Math.round(price).toLocaleString("ko-KR")}원`;
+  if (currency === "USD") return `$${price.toFixed(2)}`;
+  const n = price >= 1000 ? Math.round(price).toLocaleString("en-US") : price.toFixed(2);
+  return currency ? `${n} ${currency}` : n;
+}
+
+/** 어제 대비 변동액 표기 */
+function fmtChange(change: number, currency?: string): string {
+  const sign = change > 0 ? "+" : change < 0 ? "−" : "";
+  const abs = Math.abs(change);
+  if (currency === "KRW") return `${sign}${Math.round(abs).toLocaleString("ko-KR")}`;
+  if (currency === "USD") return `${sign}${abs.toFixed(2)}`;
+  return `${sign}${abs >= 1000 ? Math.round(abs).toLocaleString() : abs.toFixed(2)}`;
 }
 
 export function SeedMoneyView({
@@ -150,8 +174,8 @@ export function SeedMoneyView({
             <thead>
               <tr className="border-b border-line text-left text-xs text-gray-400">
                 <th className="py-2 pr-2 font-medium">{t.detail.th.stock}</th>
+                <th className="py-2 pr-2 font-medium">{t.seed.price}</th>
                 <th className="py-2 pr-2 font-medium">{t.seed.amount}</th>
-                <th className="py-2 pr-2 font-medium">{t.seed.todayChange}</th>
                 <th className="py-2 font-medium text-right">{t.seed.todayPnl}</th>
               </tr>
             </thead>
@@ -160,13 +184,33 @@ export function SeedMoneyView({
                 const q = quotes[c.ticker];
                 const amt = amountOf(c.ticker);
                 const pnl = c.supported && q?.changePct != null ? (amt * q.changePct) / 100 : null;
+                const arrow = q?.changePct == null ? "" : q.changePct > 0 ? "▲" : q.changePct < 0 ? "▼" : "";
                 return (
                   <tr key={c.ticker} className="border-b border-line/50">
-                    <td className="py-2 pr-2">
+                    <td className="py-2 pr-2 align-top">
                       <span className="font-medium text-white">{c.label}</span>
                       <span className="ml-1 text-xs text-gray-500">{c.ticker}</span>
                     </td>
-                    <td className="py-2 pr-2">
+                    <td className="py-2 pr-2 align-top">
+                      {!c.supported ? (
+                        <span className="text-xs text-gray-500">{t.seed.unsupported}</span>
+                      ) : q?.price != null ? (
+                        <div className="leading-tight">
+                          <div className="font-medium text-gray-100">{fmtPrice(q.price, q.currency)}</div>
+                          {q.changePct != null && (
+                            <div className={`text-xs ${pnlColor(q.changePct)}`}>
+                              {arrow} {fmtPct(q.changePct)}
+                              {q.change != null && (
+                                <span className="ml-1 opacity-80">({fmtChange(q.change, q.currency)})</span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-gray-600">—</span>
+                      )}
+                    </td>
+                    <td className="py-2 pr-2 align-top">
                       <input
                         inputMode="numeric"
                         value={amounts[c.ticker] ?? ""}
@@ -177,16 +221,7 @@ export function SeedMoneyView({
                         className="w-24 rounded-md border border-line bg-bg-soft px-2 py-1 text-right text-sm text-gray-100"
                       />
                     </td>
-                    <td className="py-2 pr-2">
-                      {!c.supported ? (
-                        <span className="text-xs text-gray-500">{t.seed.unsupported}</span>
-                      ) : q?.changePct != null ? (
-                        <span className={pnlColor(q.changePct)}>{fmtPct(q.changePct)}</span>
-                      ) : (
-                        <span className="text-xs text-gray-600">—</span>
-                      )}
-                    </td>
-                    <td className={`py-2 text-right font-semibold ${pnlColor(pnl)}`}>
+                    <td className={`py-2 text-right align-top font-semibold ${pnlColor(pnl)}`}>
                       {pnl != null && amt > 0 ? fmtMoney(pnl, locale, won) : "—"}
                     </td>
                   </tr>
