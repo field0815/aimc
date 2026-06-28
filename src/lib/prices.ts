@@ -1,24 +1,29 @@
 import { fetchJson } from "@/lib/adapters/types";
 
 // ─────────────────────────────────────────────────────────────
-// 주가 시세 서비스 (FMP)
+// 주가 시세 서비스 — Yahoo Finance (비공식, 무키)
 //
-// ⚠ 무료 플랜 제약(실측 확인 2026-06):
-//   - quote/historical 이 "종목별로" 허용 여부가 다름.
-//     됨:   NVDA, TSM, META, MSFT, AMZN, GOOGL, AMD
-//     안됨: AVGO(브로드컴), MU(마이크론) → Premium 잠금
-//   - 한국 종목(000660.KS, 005930.KS): Premium 잠금
-//   - 배치(comma) quote: Premium → 단일 종목씩 호출
-//   유료 플랜으로 올리면 PRICE_SUPPORTED 에 AVGO/MU/한국종목 추가하면 됨.
+// FMP 무료 플랜이 브로드컴/마이크론/한국 종목 시세를 막아서,
+// 키 없이 전 종목(미국+한국)을 커버하는 Yahoo Finance chart 엔드포인트로 전환.
+//   - quote:      /v8/finance/chart/{sym}?interval=1d&range=2d  → meta
+//   - historical: /v8/finance/chart/{sym}?period1&period2&interval=1d
+//   - 우리 티커 포맷(.KS 등)을 그대로 사용. 한국 종목은 KRW.
 //
-// 호출 수 절약을 위해 메모리 캐시(TTL)를 둔다. 서버 전용.
+// ⚠ 비공식 API라 무보장(레이트리밋/스키마 변경 가능). 실패 시 graceful null.
+//   손익은 % 기반이라 통화(USD/KRW) 혼재해도 계산에 무방.
+// 서버 전용. 메모리 캐시(TTL)로 호출 절약.
 // ─────────────────────────────────────────────────────────────
 
-const BASE = "https://financialmodelingprep.com/stable";
+const YH = "https://query1.finance.yahoo.com/v8/finance/chart";
+const UA = "Mozilla/5.0 (compatible; AIMC/1.0)";
 
-/** 시세 조회가 가능한(현 무료 플랜에서 실측 확인된) 종목 */
+/** 시세 조회 대상 종목 (Yahoo 로 전 종목 커버) */
 export const PRICE_SUPPORTED = new Set([
+  "000660.KS",
+  "005930.KS",
   "NVDA",
+  "AVGO",
+  "MU",
   "TSM",
   "META",
   "MSFT",
@@ -35,39 +40,44 @@ export interface Quote {
   ticker: string;
   price: number;
   changePct: number; // 당일 변동률 (%)
-  change: number; // 당일 변동액
+  change: number; // 당일 변동액 (해당 통화)
   previousClose: number;
+  currency?: string;
 }
 
-interface FmpQuote {
-  symbol: string;
-  price: number;
-  changePercentage: number;
-  change: number;
-  previousClose: number;
-}
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
-const QUOTE_TTL = 5 * 60 * 1000; // 5분
+const QUOTE_TTL = 5 * 60 * 1000;
 const quoteCache = new Map<string, { t: number; v: Quote | null }>();
 
 export async function getQuote(ticker: string): Promise<Quote | null> {
   if (!isPriceSupported(ticker)) return null;
-  const key = process.env.FMP_API_KEY;
-  if (!key) return null;
 
   const cached = quoteCache.get(ticker);
   if (cached && Date.now() - cached.t < QUOTE_TTL) return cached.v;
 
-  const res = await fetchJson<FmpQuote[]>(`${BASE}/quote?symbol=${ticker}&apikey=${key}`);
+  const res = await fetchJson<any>(
+    `${YH}/${encodeURIComponent(ticker)}?interval=1d&range=2d`,
+    { headers: { "User-Agent": UA } },
+  );
   let quote: Quote | null = null;
-  if (res.ok && Array.isArray(res.data) && res.data[0]?.symbol) {
-    const q = res.data[0];
+  const m = res.data?.chart?.result?.[0]?.meta;
+  if (m && typeof m.regularMarketPrice === "number") {
+    const price = m.regularMarketPrice;
+    const prev =
+      typeof m.chartPreviousClose === "number"
+        ? m.chartPreviousClose
+        : typeof m.previousClose === "number"
+          ? m.previousClose
+          : price;
+    const change = price - prev;
     quote = {
-      ticker: q.symbol,
-      price: q.price,
-      changePct: q.changePercentage,
-      change: q.change,
-      previousClose: q.previousClose,
+      ticker,
+      price,
+      previousClose: prev,
+      change,
+      changePct: prev ? (change / prev) * 100 : 0,
+      currency: m.currency,
     };
   }
   quoteCache.set(ticker, { t: Date.now(), v: quote });
@@ -76,24 +86,18 @@ export async function getQuote(ticker: string): Promise<Quote | null> {
 
 export async function getQuotes(tickers: string[]): Promise<Record<string, Quote | null>> {
   const out: Record<string, Quote | null> = {};
-  // 순차 호출(배치 미지원) — 캐시로 반복 호출 비용 최소화
-  for (const t of tickers) {
-    out[t] = await getQuote(t);
-  }
+  for (const t of tickers) out[t] = await getQuote(t);
   return out;
 }
 
 // ── 과거 종가 (EOD) ───────────────────────────────────────────
 
-interface FmpEod {
-  symbol: string;
-  date: string; // YYYY-MM-DD
-  price: number; // 종가
-  volume: number;
-}
-
-const EOD_TTL = 60 * 60 * 1000; // 1시간
+const EOD_TTL = 60 * 60 * 1000;
 const eodCache = new Map<string, { t: number; rows: { date: string; close: number }[] }>();
+
+function unix(dateISO: string): number {
+  return Math.floor(new Date(dateISO + "T00:00:00Z").getTime() / 1000);
+}
 
 /** [from, to] 구간의 일별 종가 (오름차순). 캐시됨. */
 export async function getEodSeries(
@@ -102,20 +106,25 @@ export async function getEodSeries(
   to: string,
 ): Promise<{ date: string; close: number }[]> {
   if (!isPriceSupported(ticker)) return [];
-  const key = process.env.FMP_API_KEY;
-  if (!key) return [];
 
   const cacheKey = `${ticker}:${from}:${to}`;
   const cached = eodCache.get(cacheKey);
   if (cached && Date.now() - cached.t < EOD_TTL) return cached.rows;
 
-  const res = await fetchJson<FmpEod[]>(
-    `${BASE}/historical-price-eod/light?symbol=${ticker}&from=${from}&to=${to}&apikey=${key}`,
+  const p1 = unix(from);
+  const p2 = unix(to) + 86400; // to 당일 포함
+  const res = await fetchJson<any>(
+    `${YH}/${encodeURIComponent(ticker)}?period1=${p1}&period2=${p2}&interval=1d`,
+    { headers: { "User-Agent": UA } },
   );
   let rows: { date: string; close: number }[] = [];
-  if (res.ok && Array.isArray(res.data)) {
-    rows = res.data
-      .map((r) => ({ date: r.date, close: r.price }))
+  const r = res.data?.chart?.result?.[0];
+  if (r?.timestamp && r?.indicators?.quote?.[0]?.close) {
+    const ts: number[] = r.timestamp;
+    const cl: (number | null)[] = r.indicators.quote[0].close;
+    rows = ts
+      .map((t, i) => ({ date: new Date(t * 1000).toISOString().slice(0, 10), close: cl[i] }))
+      .filter((x): x is { date: string; close: number } => typeof x.close === "number")
       .sort((a, b) => (a.date < b.date ? -1 : 1));
   }
   eodCache.set(cacheKey, { t: Date.now(), rows });
