@@ -56,6 +56,7 @@ export default async function DashboardPage() {
         <QuickLink href="/events?range=week&semi=1" label={t.dashboard.quick.aiSemi} />
         <QuickLink href="/events?range=month" label={t.dashboard.quick.thisMonth} />
         <QuickLink href="/events?range=all&imp=5" label={t.dashboard.quick.top5} />
+        <QuickLink href="/history" label={t.history.quick} />
         <QuickLink href="/events?range=all&ticker=000660.KS" label={t.dashboard.quick.skhynix} />
         <QuickLink href="/events?range=all&ticker=NVDA" label={t.dashboard.quick.nvidia} />
       </section>
